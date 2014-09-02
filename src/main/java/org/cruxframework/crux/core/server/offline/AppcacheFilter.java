@@ -126,6 +126,7 @@ public class AppcacheFilter implements Filter
 		{
 			String file = request.getRequestURI();
 			result = lastModifiedDates.get(file);
+
 			if (result == null)
 			{
 				String contextPath = filterConfig.getServletContext().getContextPath();
@@ -134,8 +135,9 @@ public class AppcacheFilter implements Filter
 				{
 					file = StringUtils.removeStart(file, contextPath);
 				}
-				
+			
 				InputStream stream = filterConfig.getServletContext().getResourceAsStream(file);
+				
 				if (stream != null)
 				{
 					String content = StreamUtils.readAsUTF8(stream);
