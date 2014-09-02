@@ -94,54 +94,50 @@ public class DeclarativeUIScreenResolver implements ScreenResourceResolver
 			URL webBaseDir = ClassPathResolverInitializer.getClassPathResolver().findWebBaseDir();
 			URL screenURL = null;
 			InputStream inputStream = null;
-			URLStreamManager manager = null;
 			
 			screenId = RegexpPatterns.REGEXP_BACKSLASH.matcher(screenId).replaceAll("/").replace(".html", ".crux.xml");
 
 			URLResourceHandler resourceHandler = URLResourceHandlersRegistry.getURLResourceHandler(webBaseDir.getProtocol());
 			screenURL = resourceHandler.getChildResource(webBaseDir, screenId);
-			manager = new URLStreamManager(screenURL);
+			
+			URLStreamManager manager = new URLStreamManager(screenURL);
 			inputStream = manager.open();
 			
-			if (inputStream == null)
+			try
 			{
-				manager.close(); // the possible underlying jar must be closed despite of the existence of the referred resource
-				screenURL = URLUtils.isValidURL(screenId);
-				
-				if (screenURL == null)
-				{
-					screenURL = new URL("file:///"+screenId);
-				}
-				
-				manager = new URLStreamManager(screenURL);
-				inputStream = manager.open();
-				
 				if (inputStream == null)
 				{
-					manager.close();
+					manager.close(); // the possible underlying jar must be closed despite of the existence of the referred resource
+					screenURL = URLUtils.isValidURL(screenId);
 					
-					screenURL = getClass().getResource("/"+screenId);
-					if (screenURL != null)
+					if (screenURL == null)
 					{
-						manager = new URLStreamManager(screenURL);
-						inputStream = manager.open();
+						screenURL = new URL("file:///"+screenId);
+					}
+					
+					manager = new URLStreamManager(screenURL);
+					inputStream = manager.open();
+					
+					if (inputStream == null)
+					{
+						manager.close();
+						
+						screenURL = getClass().getResource("/"+screenId);
+						if (screenURL != null)
+						{
+							manager = new URLStreamManager(screenURL);
+							inputStream = manager.open();
+						}
 					}
 				}
-			}
-
-			if (inputStream == null)
+				return ViewProcessor.getView(inputStream, screenURL.getPath(), device);
+			} finally
 			{
-				return null;
+				if(manager != null)
+				{
+					manager.close();
+				}					
 			}
-			
-			Document result = ViewProcessor.getView(inputStream, screenURL.getPath(), device);
-						
-			if(manager != null)
-			{
-				manager.close();
-			}
-			
-			return result;			
 		}
 		catch (Exception e)
 		{

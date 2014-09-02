@@ -1,5 +1,5 @@
 /*
- * Copyright 2013 cruxframework.org.
+ * Copyright 2014 cruxframework.org.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
  * use this file except in compliance with the License. You may obtain a copy of
@@ -15,21 +15,15 @@
  */
 package org.cruxframework.crux.tools.codeserver;
 
-import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
+import java.net.InetAddress;
 import java.net.URL;
-import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -41,36 +35,55 @@ import org.cruxframework.crux.core.server.dispatch.ServiceFactoryInitializer;
 import org.cruxframework.crux.core.server.rest.core.registry.RestServiceFactoryInitializer;
 import org.cruxframework.crux.scanner.ClasspathUrlFinder;
 import org.cruxframework.crux.scanner.Scanners;
+import org.cruxframework.crux.tools.codeserver.CodeServerRecompileListener.CompilationCallback;
+import org.cruxframework.crux.tools.codeserver.client.CodeServerNotifier;
 import org.cruxframework.crux.tools.compile.CruxRegisterUtil;
 import org.cruxframework.crux.tools.compile.utils.ModuleUtils;
 import org.cruxframework.crux.tools.parameters.ConsoleParameter;
 import org.cruxframework.crux.tools.parameters.ConsoleParameterOption;
 import org.cruxframework.crux.tools.parameters.ConsoleParametersProcessingException;
 import org.cruxframework.crux.tools.parameters.ConsoleParametersProcessor;
+import org.cruxframework.crux.tools.server.JettyDevServer;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
+import org.eclipse.jetty.server.nio.SelectChannelConnector;
+import org.eclipse.jetty.websocket.WebSocket;
+import org.eclipse.jetty.websocket.WebSocket.Connection;
+import org.eclipse.jetty.websocket.WebSocketHandler;
+import org.json.JSONObject;
 
+import com.google.gwt.core.ext.TreeLogger;
+import com.google.gwt.core.ext.UnableToCompleteException;
+import com.google.gwt.dev.CompilerContext;
+import com.google.gwt.dev.cfg.BindingProperty;
+import com.google.gwt.dev.cfg.ModuleDef;
+import com.google.gwt.dev.cfg.ModuleDefLoader;
 import com.google.gwt.dev.codeserver.Options;
-import com.google.gwt.dev.codeserver.WebServer;
+import com.google.gwt.dev.util.log.PrintWriterTreeLogger;
 
 /**
  * @author Thiago da Rosa de Bustamante
  *
  */
-public class CodeServer
+public class CodeServer 
 {
-	private static final String STOP_CODE_SERVER_PATH = "/stopcodeserver";
 	private static final Log logger = LogFactory.getLog(CodeServer.class);
 
 	private String moduleName;
 	private String sourceDir;
-	private String bindAddress;
 	private boolean noPrecompile = false;
-	private String port = "9876";
 	private String workDir;
-	private WebServer webServer;
-	
+	private String bindAddress = "localhost";
+	private int port = getDefaultPort();
+	private int notificationServerPort = getDefaultNotificationPort();
+	private String webDir;
+	private boolean startHotDeploymentScanner;
+	@SuppressWarnings("unused")
+	private boolean startJetty = false;
+	private String userAgent;
+	private String locale;
+	private CodeServerRecompileListener recompileListener;
+	private Connection compilerNotificationConnection;
+
 	public String getModuleName()
     {
     	return moduleName;
@@ -91,26 +104,6 @@ public class CodeServer
     	this.sourceDir = sourceDir;
     }
 
-	public String getBindAddress()
-    {
-    	return bindAddress;
-    }
-
-	public void setBindAddress(String bindAddress)
-    {
-    	this.bindAddress = bindAddress;
-    }
-
-	public String getPort()
-    {
-    	return port;
-    }
-
-	public void setPort(String port)
-    {
-    	this.port = port;
-    }
-
 	public String getWorkDir()
     {
     	return workDir;
@@ -120,11 +113,19 @@ public class CodeServer
     {
     	this.workDir = workDir;
     }
+	
+	protected int getDefaultPort()
+	{
+		return 9876;
+	}
+	
+	protected int getDefaultNotificationPort()
+	{
+		return CodeServerNotifier.DEFAULT_COMPILER_NOTIFIER_PORT;
+	}
 
 	protected void execute() throws Exception
     {
-		killOldServer();
-		
 		URL[] urls = ClasspathUrlFinder.findClassPaths();
 		Scanners.setSearchURLs(urls);
 		ModuleUtils.initializeScannerURLs(urls);
@@ -147,10 +148,112 @@ public class CodeServer
 		{
 			logger.info("Starting code server for module ["+moduleName+"]");
 			CruxBridge.getInstance().registerLastPageRequested(screenIDs.iterator().next());
+			processUserAgent();
 			String[] args = getServerParameters();
+			initializeRecompileListener();
 			runGWTCodeServer(args);
 		}
     }
+
+	protected void initializeRecompileListener() 
+	{
+		recompileListener = new CodeServerRecompileListener(webDir);
+		if (startHotDeploymentScanner)
+		{
+			HotDeploymentScanner.scanProjectDirs(bindAddress, port, moduleName, userAgent, locale);
+			runCompileNotificationServer();
+			registerCompileNotificationCallback();
+		}
+	}
+
+	protected void registerCompileNotificationCallback() 
+	{
+		recompileListener.setCompilationCallback(new CompilationCallback() 
+		{
+			@Override
+			public void onCompilationStart(String moduleName) 
+			{
+				if (compilerNotificationConnection != null)
+				{
+					try 
+					{
+						JSONObject data = new JSONObject();
+						data.put("op", "START");
+						data.put("module", moduleName);
+
+						compilerNotificationConnection.sendMessage(data.toString());
+					}
+					catch (Exception e) 
+					{
+						logger.error("Error notifying client about module compilation", e);
+					}
+				}
+			}
+			
+			@Override
+			public void onCompilationEnd(String moduleName, boolean success) 
+			{
+				if (compilerNotificationConnection != null)
+				{
+					try 
+					{
+						JSONObject data = new JSONObject();
+						data.put("op", "END");
+						data.put("module", moduleName);
+						data.put("status", success);
+
+						compilerNotificationConnection.sendMessage(data.toString());
+					}
+					catch (Exception e) 
+					{
+						logger.error("Error notifying client about module compilation", e);
+					}
+				}
+			}
+		});
+	}
+
+	protected void runCompileNotificationServer() 
+	{
+		try 
+		{
+			SelectChannelConnector connector = new SelectChannelConnector();
+			connector.setHost(bindAddress);
+			connector.setPort(notificationServerPort);
+			connector.setReuseAddress(false);
+			connector.setSoLingerTime(0);
+	
+			Server server = new Server();
+			server.addConnector(connector);
+			server.setHandler(new WebSocketHandler() 
+			{
+				@Override
+				public WebSocket doWebSocketConnect(HttpServletRequest arg0, String arg1) 
+				{
+					return new WebSocket()  
+					{
+						@Override
+						public void onOpen(Connection connection) 
+						{
+							compilerNotificationConnection = connection;
+						}
+						
+						@Override
+						public void onClose(int closeCode, String message) 
+						{
+							compilerNotificationConnection = null;							
+						}
+					};
+				}
+			});
+
+			server.start();
+		} 
+		catch (Exception e) 
+		{
+			logger.error("Error starting the compilation notifier service.", e);
+		}
+	}
 
 	protected void runGWTCodeServer(String[] args) throws Exception 
 	{
@@ -159,117 +262,14 @@ public class CodeServer
 		{
 			System.exit(1);
 		}
+		options.setRecompileListener(recompileListener);
 		try 
 		{
-			webServer = com.google.gwt.dev.codeserver.CodeServer.start(options);
-			addStopCapabilitiesToJettyServer();
-			String url = "http://localhost:" + port + "/";
-			logger.info("The code server is ready.");
-			logger.info("Next, visit: " + url);
+			com.google.gwt.dev.codeserver.CodeServer.main(options);
 		} 
 		catch (Throwable t) 
 		{
-			logger.error("Error running code server", t);;
-			System.exit(1);
-		}
-	}
-
-	/**
-	 * It is an workaround for a bug o eclipse IDE. When stopping a debug on Eclipse, 
-	 * it kills the JVM not gracefully and the Jetty server does not die on Windows.
-	 * So, we need to create a strategy to kill those "zombie" jetty servers that stays
-	 * running after a JVM kill. If we does not kill, another jetty can not start a code
-	 * server session, because the port is being listened by the old jetty process.
-	 */
-	private void killOldServer() 
-	{
-        URLConnection connection;
-        String uri = "http://localhost:" + port + STOP_CODE_SERVER_PATH;
-        try 
-        {
-			connection = new URL(uri).openConnection();
-			connection.connect();
-			connection.getContent();
-			logger.info("Shutting down Old Code server instance...");
-			Thread.sleep(2500);
-		}
-        catch (Exception e) 
-        {
-        	//IGNORE. We don't have any old server
-		}
-    }
-
-	/**
-	 * It is an workaround for a bug o eclipse IDE. When stopping a debug on Eclipse, 
-	 * it kills the JVM not gracefully and the Jetty server does not die on Windows.
-	 * So, we need to create a strategy to kill those "zombie" jetty servers that stays
-	 * running after a JVM kill. If we does not kill, another jetty can not start a code
-	 * server session, because the port is being listened by the old jetty process.
-	 */
-	private void addStopCapabilitiesToJettyServer() 
-	{
-		try 
-		{
-			Field serverField = WebServer.class.getDeclaredField("server");
-			serverField.setAccessible(true);
-			Server server = (Server) serverField.get(webServer);
-			
-		    ServletContextHandler handler = (ServletContextHandler) server.getHandler();
-		    handler.addServlet(new ServletHolder(new HttpServlet() 
-		    {
-				private static final long serialVersionUID = -2492061626388189841L;
-
-				@Override
-				protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException 
-				{
-					stopServer(request, response);
-				}
-		    }), STOP_CODE_SERVER_PATH);
-		} 
-		catch (Exception e) 
-		{
-			logger.error("Error registering stop servlet", e);
-		}
-	}
-
-	private void stopServer(HttpServletRequest request, HttpServletResponse response) 
-	{
-		response.setContentType("text/html");
-		response.setStatus(HttpServletResponse.SC_OK); //200
-		setRequestHandled(request);
-
-		logger.info("Stopping jetty server...");
-		new Thread()
-		{
-			public void run() 
-			{
-				try 
-				{
-					Thread.sleep(1000);
-					webServer.stop();
-					Thread.sleep(1000);
-					logger.info("Terminating code server");
-					System.exit(0);
-				} 
-				catch (Exception e) 
-				{
-					logger.error(e.getMessage(), e);
-				}
-			};
-		}.start();
-	}
-
-	private void setRequestHandled(HttpServletRequest request) 
-	{
-		try
-		{
-			Method setHandledMethod = WebServer.class.getDeclaredMethod("setHandled", new Class<?>[]{HttpServletRequest.class});
-			setHandledMethod.setAccessible(true);
-			setHandledMethod.invoke(null, request);
-		}
-		catch(Exception e)
-		{
-			logger.error("Error handling request to stopJetty servlet", e);
+			logger.error("Error running code server", t);
 		}
 	}
 
@@ -286,10 +286,10 @@ public class CodeServer
 			args.add("-bindAddress");
 			args.add(bindAddress);
 		}
-		if (port != null && port.length() > 0)
+		if (port  > 0)
 		{
 			args.add("-port");
-			args.add(port);
+			args.add(Integer.toString(port));
 		}
 		if (workDir != null && workDir.length() > 0)
 		{
@@ -306,6 +306,7 @@ public class CodeServer
 			String moduleFullName = Modules.getInstance().getModule(moduleName).getFullName();
 			args.add(moduleFullName);
 		}
+		
 	    return args.toArray(new String[args.size()]);
     }
 
@@ -321,23 +322,91 @@ public class CodeServer
 	        {
 	        	this.noPrecompile = true;
 	        }
+	        else if (parameter.getName().equals("-startHotDeploymentScanner"))
+	        {
+	        	this.startHotDeploymentScanner = true;
+	        }
+	        else if (parameter.getName().equals("-startJetty"))
+	        {
+	        	this.startJetty = true;
+	        }
+	        else if (parameter.getName().equals("-userAgent"))
+	        {
+	        	userAgent = parameter.getValue();
+	        }
+	        else if (parameter.getName().equals("-locale"))
+	        {
+	        	locale = parameter.getValue();
+	        }
 	        else if (parameter.getName().equals("-sourceDir"))
 	        {
 	        	sourceDir = parameter.getValue();
 	        }
 	        else if (parameter.getName().equals("-bindAddress"))
 	        {
-	        	bindAddress = parameter.getValue();
+	        	try
+	        	{
+	        		InetAddress bindAddress = InetAddress.getByName(parameter.getValue());
+	        		if (bindAddress.isAnyLocalAddress()) 
+	        		{
+	        			this.bindAddress = InetAddress.getLocalHost().getHostAddress();
+	        		}
+	        		else 
+	        		{
+	        			this.bindAddress = parameter.getValue();
+	        		}
+	        	}
+	        	catch(Exception e)
+	        	{
+	        		//Use default
+	        	}
 	        }
 	        else if (parameter.getName().equals("-port"))
 	        {
-	        	port = parameter.getValue();
+	        	port =Integer.parseInt(parameter.getValue());
+	        }
+	        else if (parameter.getName().equals("-notificationServerPort"))
+	        {
+	        	notificationServerPort =Integer.parseInt(parameter.getValue());
 	        }
 	        else if (parameter.getName().equals("-workDir"))
 	        {
 	        	workDir = parameter.getValue();
 	        }
+	        else if (parameter.getName().equals("-webDir"))
+	        {
+	        	webDir = parameter.getValue();
+	        }
         }
+    }
+
+	protected void processUserAgent()
+    {
+	    if (userAgent == null)
+		{
+		    PrintWriterTreeLogger logger = new PrintWriterTreeLogger();
+		    logger.setMaxDetail(TreeLogger.Type.INFO);
+		    CompilerContext emptyCompilerContext = new CompilerContext.Builder().build();
+		    try
+            {
+		    	String moduleFullName = Modules.getInstance().getModule(moduleName).getFullName();
+	            ModuleDef moduleDef = ModuleDefLoader.loadFromClassPath(logger, emptyCompilerContext, moduleFullName, false, true);
+	            BindingProperty userAgentProperty = (BindingProperty) moduleDef.getProperties().find("user.agent");
+	            userAgent =  userAgentProperty.getFirstLegalValue();
+	            if (userAgent == null)
+	            {
+	            	throw new ConsoleParametersProcessingException("Can not determine the userAgent that must be used by code server. Configure your .gwt.xml file or inform it using -userAgent to CodeServer tool.");
+	            }
+	            else
+	            {
+	            	CodeServer.logger.info("User Agent not provided. Using first valid value found on module "+moduleFullName+".gwt.xml.");
+	            }
+            }
+            catch (UnableToCompleteException e)
+            {
+            	throw new ConsoleParametersProcessingException("Can not determine the userAgent that must be used by code server. Configure your .gwt.xml file or inform it using -userAgent to CodeServer tool.");
+            }
+		}
     }
 
 	protected ConsoleParametersProcessor createParametersProcessor()
@@ -358,13 +427,33 @@ public class CodeServer
 		parametersProcessor.addSupportedParameter(parameter);
 
 		parametersProcessor.addSupportedParameter(new ConsoleParameter("-noprecompile", "If informed, code server will not pre compile the source.", false, true));
+
+		parametersProcessor.addSupportedParameter(new ConsoleParameter("-startHotDeploymentScanner", "If informed, a hotdeployment scanner will be started to automatically recompile the module when changes are made on the project.", false, true));
 		
+		parametersProcessor.addSupportedParameter(new ConsoleParameter("-startJetty", "If informed, starts the default application server (Jetty).", false, true));
+		
+		parameter = new ConsoleParameter("-userAgent", "The userAgent used by hotdeployment scanner to recompile the project.", false, true);
+		parameter.addParameterOption(new ConsoleParameterOption("agent", "user agent"));
+		parametersProcessor.addSupportedParameter(parameter);
+		
+		parameter = new ConsoleParameter("-locale", "The locale used by hotdeployment scanner to recompile the project.", false, true);
+		parameter.addParameterOption(new ConsoleParameterOption("locale", "locale"));
+		parametersProcessor.addSupportedParameter(parameter);
+
 		parameter = new ConsoleParameter("-port", "The port where the code server will run.", false, true);
 		parameter.addParameterOption(new ConsoleParameterOption("port", "Port"));
 		parametersProcessor.addSupportedParameter(parameter);
 
-		parameter = new ConsoleParameter("-workDir", " The root of the directory tree where the code server will write compiler output. If not supplied, a temporary directory will be used.", false, true);
+		parameter = new ConsoleParameter("-notificationServerPort", "The port where the compile notification server will run.", false, true);
+		parameter.addParameterOption(new ConsoleParameterOption("port", "Port"));
+		parametersProcessor.addSupportedParameter(parameter);
+
+		parameter = new ConsoleParameter("-workDir", "The root of the directory tree where the code server will write compiler output. If not supplied, a temporary directory will be used.", false, true);
 		parameter.addParameterOption(new ConsoleParameterOption("dir", "Work dir"));
+		parametersProcessor.addSupportedParameter(parameter);
+
+		parameter = new ConsoleParameter("-webDir", "The directory to be updated by code server compiler. If provided, after each code server compilation, this folder will be updated.", false, true);
+		parameter.addParameterOption(new ConsoleParameterOption("dir", "Web dir"));
 		parametersProcessor.addSupportedParameter(parameter);
 
 		parametersProcessor.addSupportedParameter(new ConsoleParameter("-help", "Display the usage screen.", false, true));
@@ -388,6 +477,11 @@ public class CodeServer
 			{
 				codeServer.processParameters(parameters.values());
 				codeServer.execute();
+				
+				if(parameters.containsKey("-startJetty"))
+				{
+					JettyDevServer.main(args);
+				}
 			}
 		}
 		catch (ConsoleParametersProcessingException e)
