@@ -17,6 +17,7 @@ package org.cruxframework.crux.core.client.screen.views;
 
 import org.cruxframework.crux.core.client.collection.FastList;
 import org.cruxframework.crux.core.client.collection.FastMap;
+import org.cruxframework.crux.core.client.screen.Screen;
 
 import com.google.gwt.event.logical.shared.CloseEvent;
 import com.google.gwt.event.logical.shared.ResizeEvent;
@@ -32,17 +33,50 @@ import com.google.gwt.user.client.ui.Widget;
  */
 public abstract class MultipleCrawlableViewsContainer extends CrawlableViewContainer
 {
-	protected FastMap<View> activeViews = new FastMap<View>();;
+	protected FastMap<View> activeViews = new FastMap<View>();
 
+	/**
+	 * @param mainWidget
+	 * @param clearPanelsForDeactivatedViews
+	 */
 	public MultipleCrawlableViewsContainer(Widget mainWidget, boolean clearPanelsForDeactivatedViews)
     {
 	    super(mainWidget, clearPanelsForDeactivatedViews);
     }
 
 	@Override
+	protected void showView(String viewName, String viewId, Object parameter)
+	{
+		View view = getView(viewName);
+		if (view != null)
+		{
+			if (!view.isActive())
+			{
+				renderView(view, null);
+			} 
+			else 
+			{
+				updateHistory(viewId);
+			}
+		}
+		else
+		{
+			loadAndRenderView(viewName, viewId, parameter);
+		}
+	}
+	
+	protected void updateHistory(String viewId)
+	{
+	    if (isHistoryControlEnabled())
+	    {
+    		Screen.addToHistory(getHistoryControlPrefix() + viewId);
+	    }
+	}
+	
+	@Override
 	protected boolean activate(View view, Panel containerPanel, Object parameter)
 	{
-		assert(view != null):"Can not active a null view";
+		assert (view != null) : "Can not active a null view";
 		boolean activated = super.activate(view, containerPanel, parameter);
 	    if (activated && !activeViews.containsKey(view.getId()))
 	    {
@@ -54,7 +88,7 @@ public abstract class MultipleCrawlableViewsContainer extends CrawlableViewConta
 	@Override
 	protected boolean deactivate(View view, Panel containerPanel, boolean skipEvent)
 	{
-		assert(view != null):"Can not deactive a null view";
+		assert (view != null) : "Can not deactive a null view";
 		boolean deactivated = true;
 		if (activeViews.containsKey(view.getId()))
 		{

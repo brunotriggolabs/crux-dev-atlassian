@@ -21,7 +21,6 @@ import com.google.gwt.user.client.ui.IsWidget;
  * @author Thiago da Rosa de Bustamante
  *
  */
-public interface WidgetFactory<T>
+public interface WidgetFactory<T> extends DataFactory<IsWidget, T>
 {
-	IsWidget createWidget(T value);
 }

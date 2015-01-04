@@ -17,7 +17,9 @@ package org.cruxframework.crux.core.rebind.screen.widget.creator;
 
 import org.cruxframework.crux.core.rebind.AbstractProxyCreator.SourcePrinter;
 import org.cruxframework.crux.core.rebind.CruxGeneratorException;
-import org.cruxframework.crux.core.rebind.screen.widget.AbstractDataWidgetConsumer;
+import org.cruxframework.crux.core.rebind.screen.widget.DataWidgetConsumer;
+import org.cruxframework.crux.core.rebind.screen.widget.ViewBindHandler;
+import org.cruxframework.crux.core.rebind.screen.widget.ViewFactoryCreator.WidgetConsumer;
 import org.json.JSONObject;
 
 import com.google.gwt.core.ext.GeneratorContext;
@@ -27,7 +29,7 @@ import com.google.gwt.core.ext.typeinfo.JClassType;
  * @author Thiago da Rosa de Bustamante
  *
  */
-public class PageableWidgetConsumer extends AbstractDataWidgetConsumer
+public class PageableWidgetConsumer extends DataWidgetConsumer implements WidgetConsumer
 {
 	private GeneratorContext context;
 	private JClassType widgetClassType;
@@ -52,7 +54,7 @@ public class PageableWidgetConsumer extends AbstractDataWidgetConsumer
 		String bindPath = metaElem.optString("bindPath");
 		String bindConverter = metaElem.optString("bindConverter");
 				
-		JClassType converterType = getConverterType(out, context, bindPath, bindConverter, dataObjectType, widgetClassType);
+		JClassType converterType = ViewBindHandler.getConverterType(context, bindPath, bindConverter, dataObjectType, widgetClassType);
     	String converterVariable = null;
     	if (converterType != null)
     	{

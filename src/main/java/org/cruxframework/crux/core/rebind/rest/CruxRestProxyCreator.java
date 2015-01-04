@@ -275,7 +275,7 @@ public abstract class CruxRestProxyCreator extends AbstractInterfaceWrapperProxy
 	protected void generateAJAXInvocation(RestMethodInfo methodInfo, SourcePrinter srcWriter, JParameter callbackParameter, 
 			String callbackResultTypeName, String callbackParameterName, String restURIParam)
     {
-	    srcWriter.println("RequestBuilder builder = new RequestBuilder(RequestBuilder."+methodInfo.httpMethod+", "+restURIParam+");");
+	    srcWriter.println("RequestBuilder builder = " + getRequestBuilderInitialization(methodInfo, restURIParam) + ";");
 		setLocaleInfo(srcWriter, "builder");
 		
 		if (ConfigurationFactory.getConfigurations().sendCruxViewNameOnClientRequests().equals("true"))
@@ -307,15 +307,20 @@ public abstract class CruxRestProxyCreator extends AbstractInterfaceWrapperProxy
 		generateXSRFHeaderProtectionForWrites(methodInfo.httpMethod, "builder", srcWriter);
 		srcWriter.println("builder.send();");
 		srcWriter.println("}catch (Exception e){");
-		generateLogHandlingCode(srcWriter, "Level.SEVERE");
+		generateLogHandlingCode(srcWriter, "Level.SEVERE", "e");
 		srcWriter.println(callbackParameterName+".onError(new RestError(-1, Crux.getMessages().restServiceUnexpectedError(e.getMessage())));");
 		srcWriter.println("}");
     }
 
-	private static void generateLogHandlingCode(SourcePrinter srcWriter, String logLevel) 
+	protected String getRequestBuilderInitialization(RestMethodInfo methodInfo, String restURIParam)
+    {
+	    return "new RequestBuilder(RequestBuilder."+methodInfo.httpMethod+", "+restURIParam+")";
+    }
+
+	protected static void generateLogHandlingCode(SourcePrinter srcWriter, String logLevel, String e) 
 	{
 		srcWriter.println("if (LogConfiguration.loggingIsEnabled()){");
-		srcWriter.println("__log.log("+logLevel+", e.getMessage(), e);");
+		srcWriter.println("__log.log("+logLevel+", "+e+".getMessage(), e);");
 		srcWriter.println("}");
 	}
 
@@ -345,7 +350,7 @@ public abstract class CruxRestProxyCreator extends AbstractInterfaceWrapperProxy
 	}
 	
 	//TODO: put this in a DeferredBindingUtils class
-	private static String getNonConflictedVarName(String originalVar, String possibleConflictedVar)
+	protected static String getNonConflictedVarName(String originalVar, String possibleConflictedVar)
 	{
 		if (possibleConflictedVar.equals(originalVar))
 		{
@@ -381,8 +386,7 @@ public abstract class CruxRestProxyCreator extends AbstractInterfaceWrapperProxy
 			generateSaveStateBlock(srcWriter, methodInfo.isReadMethod, responseVariable, restURIParam, methodInfo.methodURI);
 			srcWriter.println(callbackParameterName+".onSuccess("+resultVariable+");");
 			srcWriter.println("}catch (Exception e){");
-			generateLogHandlingCode(srcWriter, "Level.SEVERE");
-			//srcWriter.println(callbackParameterName+".onError(new RestError(-1, Crux.getMessages().restServiceUnexpectedError(e.getMessage())));");
+			generateLogHandlingCode(srcWriter, "Level.SEVERE", "e");
 			srcWriter.println("}");
 			srcWriter.println("}else {");
 			generateSaveStateBlock(srcWriter, methodInfo.isReadMethod, responseVariable, restURIParam, methodInfo.methodURI);
@@ -411,7 +415,7 @@ public abstract class CruxRestProxyCreator extends AbstractInterfaceWrapperProxy
 			srcWriter.println(builderVar+".setHeader("+EscapeUtils.quote(HttpHeaderNames.XSRF_PROTECTION_HEADER)+", \"1\");");
 		}
 	}
-
+	
 	protected void generateSaveStateBlock(SourcePrinter srcWriter, boolean isReadMethod, String responseVar, String uriVar, String uri)
 	{
 		if (mustGenerateStateControlMethods && readMethods.contains(uri) && updateMethods.contains(uri))

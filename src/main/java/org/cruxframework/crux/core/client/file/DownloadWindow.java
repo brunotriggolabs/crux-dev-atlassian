@@ -86,7 +86,7 @@ public class DownloadWindow
 	
 	public void openSaveAsWindow(Blob blob, String name)
 	{
-		instance.openSaveAsWindow(blob,name);
+		instance.openSaveAsWindow(blob, name);
 	}
 }
 

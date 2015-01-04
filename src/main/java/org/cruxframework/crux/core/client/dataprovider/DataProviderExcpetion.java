@@ -16,8 +16,8 @@
 package org.cruxframework.crux.core.client.dataprovider;
 
 /**
+ * Exception to describe a {@link DataProvider} oepration error
  * @author Thiago da Rosa de Bustamante
- *
  */
 public class DataProviderExcpetion extends RuntimeException
 {
@@ -28,18 +28,18 @@ public class DataProviderExcpetion extends RuntimeException
 	    super();
     }
 
-	public DataProviderExcpetion(String arg0, Throwable arg1)
+	public DataProviderExcpetion(String message, Throwable t)
     {
-	    super(arg0, arg1);
+	    super(message, t);
     }
 
-	public DataProviderExcpetion(String arg0)
+	public DataProviderExcpetion(String message)
     {
-	    super(arg0);
+	    super(message);
     }
 
-	public DataProviderExcpetion(Throwable arg0)
+	public DataProviderExcpetion(Throwable t)
     {
-	    super(arg0);
+	    super(t);
     }
 }

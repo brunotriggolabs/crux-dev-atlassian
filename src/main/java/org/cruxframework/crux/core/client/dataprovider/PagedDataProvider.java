@@ -15,14 +15,18 @@
  */
 package org.cruxframework.crux.core.client.dataprovider;
 
+import com.google.gwt.event.shared.HandlerRegistration;
+
 
 /**
- * A DataProvider that supports pagination
+ * A {@link DataProvider} that supports pagination
  * 
  * @author Thiago da Rosa de Bustamante
  */
 public interface PagedDataProvider<E> extends DataProvider<E>
 {
+	void firstOnPage();
+
 	boolean hasNextPage();
 	boolean nextPage();
 	
@@ -35,5 +39,5 @@ public interface PagedDataProvider<E> extends DataProvider<E>
 	int getCurrentPageSize();
 	int getCurrentPage();
 	
-	void setCallback(PagedDataProviderCallback callback);
+	HandlerRegistration addPageLoadedHandler(PageLoadedHandler handler);
 }
